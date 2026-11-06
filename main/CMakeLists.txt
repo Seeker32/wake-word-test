@@ -3,8 +3,11 @@ set(manifest_path "${model_dir}/hey_kamana.json")
 file(READ "${manifest_path}" model_manifest)
 string(JSON model_file GET "${model_manifest}" model)
 
-if(CONFIG_WAKE_BOARD_BOX_3)
-    set(board_src "../boards/esp32-s3-box-3.cpp")
+if(CONFIG_WAKE_BOARD_BOX_3 OR CONFIG_WAKE_BOARD_BOX OR CONFIG_WAKE_BOARD_BOX_LITE)
+    # BOX family boards share one codec driver, parameterized by Kconfig.
+    set(board_src "../boards/box_family.cpp")
+elseif(CONFIG_WAKE_BOARD_BREAD_COMPACT_WIFI)
+    set(board_src "../boards/bread-compact-wifi.cpp")
 endif()
 
 idf_component_register(
@@ -15,7 +18,8 @@ idf_component_register(
 )
 
 if(NOT board_src)
-    message(FATAL_ERROR "Select a supported wake-word test board in menuconfig")
+    message(FATAL_ERROR "Select a supported wake-word test board in menuconfig "
+                        "(Wake Word Board -> Wake-word test board)")
 endif()
 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${manifest_path}")
