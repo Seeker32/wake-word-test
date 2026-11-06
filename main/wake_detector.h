@@ -4,6 +4,7 @@
 #include <optional>
 
 #include "board_audio.h"
+#include "esp_vad.h"
 #include "tensorflow/lite/experimental/microfrontend/lib/frontend.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
@@ -17,7 +18,10 @@ public:
 private:
     static constexpr int kFeatures = 40;
     static constexpr size_t kWindow = WAKE_SLIDING_WINDOW;
+    static constexpr int kVadFrameMs = 10;
     static_assert(kWindow > 0);
+
+    void FeedVad(std::span<const int16_t> pcm);
 
     alignas(16) std::array<uint8_t, WAKE_TENSOR_ARENA> tensor_arena_;
     alignas(16) std::array<uint8_t, 1024> variable_arena_;
@@ -30,4 +34,8 @@ private:
     size_t feature_row_ = 0;
     size_t probability_slot_ = 0;
     size_t probability_count_ = 0;
+    vad_handle_t vad_ = nullptr;
+    std::array<int16_t, kWakeSampleRate * kVadFrameMs / 1000> vad_frame_{};
+    size_t vad_samples_ = 0;
+    bool speech_active_ = false;
 };

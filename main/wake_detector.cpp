@@ -53,7 +53,11 @@ esp_err_t WakeDetector::Init() {
     config.log_scale = {1, 6};
     ESP_RETURN_ON_FALSE(FrontendPopulateState(&config, &frontend_, kWakeSampleRate), ESP_ERR_NO_MEM,
                         kTag, "Initialize fixed-point audio frontend");
-    ESP_LOGI(kTag, "Model ready, %u tensor arena bytes used", static_cast<unsigned>(interpreter_->arena_used_bytes()));
+    // Keep the gate open through the quiet tail of a spoken wake word.
+    vad_ = vad_create_with_param(VAD_MODE_1, kWakeSampleRate, kVadFrameMs, 30, 300);
+    ESP_RETURN_ON_FALSE(vad_, ESP_ERR_NO_MEM, kTag, "Initialize ESP-SR VAD");
+    ESP_LOGI(kTag, "Model ready, %u tensor arena bytes used, ESP-SR VAD enabled",
+             static_cast<unsigned>(interpreter_->arena_used_bytes()));
     return ESP_OK;
 }
 
@@ -63,7 +67,23 @@ esp_err_t WakeDetector::Reset() {
     feature_row_ = 0;
     probability_slot_ = 0;
     probability_count_ = 0;
+    vad_reset_trigger(vad_);
+    vad_samples_ = 0;
+    speech_active_ = false;
     return interpreter_->Reset() == kTfLiteOk ? ESP_OK : ESP_FAIL;
+}
+
+void WakeDetector::FeedVad(std::span<const int16_t> pcm) {
+    while (!pcm.empty()) {
+        const size_t count = std::min(pcm.size(), vad_frame_.size() - vad_samples_);
+        std::copy_n(pcm.data(), count, vad_frame_.data() + vad_samples_);
+        pcm = pcm.subspan(count);
+        vad_samples_ += count;
+        if (vad_samples_ == vad_frame_.size()) {
+            speech_active_ = vad_process_with_trigger(vad_, vad_frame_.data()) == VAD_SPEECH;
+            vad_samples_ = 0;
+        }
+    }
 }
 
 esp_err_t WakeDetector::Process(std::span<const int16_t> pcm, bool &detected, float &score) {
@@ -72,6 +92,7 @@ esp_err_t WakeDetector::Process(std::span<const int16_t> pcm, bool &detected, fl
         size_t consumed = 0;
         const auto features = FrontendProcessSamples(&frontend_, pcm.data(), pcm.size(), &consumed);
         ESP_RETURN_ON_FALSE(consumed > 0 && consumed <= pcm.size(), ESP_FAIL, kTag, "Frontend stalled");
+        FeedVad(pcm.first(consumed));
         pcm = pcm.subspan(consumed);
         if (features.size == 0) continue;
         ESP_RETURN_ON_FALSE(features.size == kFeatures, ESP_ERR_INVALID_SIZE, kTag, "Unexpected feature width");
@@ -91,8 +112,11 @@ esp_err_t WakeDetector::Process(std::span<const int16_t> pcm, bool &detected, fl
         probability_count_ = std::min(probability_count_ + 1, kWindow);
         score = std::accumulate(probabilities_.begin(), probabilities_.end(), 0.0f) / kWindow;
         if (probability_count_ == kWindow && score >= WAKE_PROBABILITY_CUTOFF) {
-            detected = true;
-            break;
+            if (speech_active_) {
+                detected = true;
+                break;
+            }
+            ESP_LOGD(kTag, "Wake candidate blocked by VAD (%.3f)", score);
         }
     }
     return ESP_OK;

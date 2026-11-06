@@ -18,11 +18,13 @@ idf.py flash monitor
 
 串口出现 `Listening for Hey Kamana` 后说一次唤醒词。确认日志出现 `Wake word detected: Hey Kamana`，板载扬声器完整播放一次提示音。等监听恢复后再说一次，确认两次均能触发。使用 `Ctrl+]` 退出串口监视。
 
+ESP-SR VAD 和唤醒模型持续接收同一段麦克风音频。唤醒分数达标且 VAD 检测到语音活动时才播放提示音。开启 DEBUG 日志可查看 `Wake candidate blocked by VAD`。
+
 ## 串口资源监控
 
 主循环约每 5 秒输出一条 `RES`。`cpu0_pct` 和 `cpu1_pct` 是各核在采样窗口内的忙碌率，`-1` 表示该核的数据不可用。堆统计针对可按字节访问的内部 RAM，包含当前余量、启动以来最低余量和当前最大连续空闲块。栈余量是主任务启动以来的最低值，内存单位都是字节。
 
-`process_avg_us` 和 `process_max_us` 是窗口内唤醒处理的平均和最大耗时，`process_count` 是处理次数。计时范围包含特征提取和模型推理，采集等待另计。每次提示音播放流程结束后输出 `WAKE playback_ms`，包含播放和驱动排空缓冲的时间。
+`process_avg_us` 和 `process_max_us` 是窗口内唤醒处理的平均和最大耗时，`process_count` 是处理次数。计时范围包含 VAD、特征提取和模型推理，采集等待另计。每次提示音播放流程结束后输出 `WAKE playback_ms`，包含播放和驱动排空缓冲的时间。
 
 ## 源码目录
 
