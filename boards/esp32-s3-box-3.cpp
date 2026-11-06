@@ -1,8 +1,3 @@
-// Shared board layer for the ESP32-S3 BOX family (original BOX, BOX-3,
-// BOX-Lite). All three pair the ES7210 ADC with the ES8311 DAC on one duplex
-// I2S port and differ only in the LRCK pin and audio sample rate, so the
-// driver is parameterized by the Kconfig-selected constants below.
-
 #include "board_audio.h"
 #include "resample_util.h"
 
@@ -21,23 +16,9 @@
 #include "sdkconfig.h"
 
 namespace {
-#if CONFIG_WAKE_BOARD_BOX_3
 constexpr char kTag[] = "box3_audio";
 constexpr uint32_t kAudioRate = 24000;
 constexpr gpio_num_t kWsPin = GPIO_NUM_45;
-#elif CONFIG_WAKE_BOARD_BOX
-constexpr char kTag[] = "box_audio";
-constexpr uint32_t kAudioRate = 24000;
-constexpr gpio_num_t kWsPin = GPIO_NUM_47;
-#elif CONFIG_WAKE_BOARD_BOX_LITE
-constexpr char kTag[] = "box_lite_audio";
-constexpr uint32_t kAudioRate = 16000;
-constexpr gpio_num_t kWsPin = GPIO_NUM_47;
-#else
-#error "No BOX-family board selected in menuconfig"
-#endif
-
-// Wiring shared by the whole BOX family.
 constexpr gpio_num_t kMclkPin = GPIO_NUM_2;
 constexpr gpio_num_t kBclkPin = GPIO_NUM_17;
 constexpr gpio_num_t kDinPin = GPIO_NUM_16;
@@ -46,15 +27,17 @@ constexpr int kPaPin = GPIO_NUM_46;
 constexpr gpio_num_t kSdaPin = GPIO_NUM_8;
 constexpr gpio_num_t kSclPin = GPIO_NUM_18;
 
-constexpr uint32_t kReadSamples = kAudioRate / 100;
-static_assert(kReadSamples <= kWakeReadSamples, "10 ms capture must fit the wake buffer");
+constexpr uint32_t kReadSamples = kAudioRate * 8 / 1000;
+// The rate converter needs 128 samples of headroom beyond the resampled block.
+constexpr size_t kResamplerPadSamples = 128;
+static_assert(kReadSamples * kWakeSampleRate / kAudioRate + kResamplerPadSamples <= kWakeReadSamples,
+              "Capture block resamples beyond kWakeReadSamples");
 constexpr size_t kDmaBlocks = 6;
 constexpr int kMicGain = CONFIG_WAKE_MIC_GAIN;
 constexpr int kSpeakerVolume = CONFIG_WAKE_SPEAKER_VOLUME;
 
 esp_codec_dev_handle_t mic;
 esp_codec_dev_handle_t speaker;
-// Present only when the board rate differs from the model rate (BOX-Lite).
 esp_ae_rate_cvt_handle_t resampler;
 
 esp_err_t InitI2s(i2s_chan_handle_t &tx, i2s_chan_handle_t &rx) {
@@ -147,21 +130,19 @@ esp_err_t InitBoardAudio() {
     ESP_RETURN_ON_ERROR(esp_codec_dev_open(mic, &mic_format), kTag, "Open microphone");
     ESP_RETURN_ON_ERROR(esp_codec_dev_set_in_channel_gain(mic, mic_format.channel_mask, kMicGain), kTag, "Mic gain");
 
-    if (kAudioRate != kWakeSampleRate) {
-        esp_ae_rate_cvt_cfg_t rate = {};
-        rate.src_rate = kAudioRate;
-        rate.dest_rate = kWakeSampleRate;
-        rate.channel = 1;
-        rate.bits_per_sample = 16;
-        rate.complexity = 2;
-        rate.perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED;
-        ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_open(&rate, &resampler) == ESP_AE_ERR_OK,
-                            ESP_FAIL, kTag, "Open microphone resampler");
-        uint32_t required_samples = 0;
-        ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_get_max_out_sample_num(resampler, kReadSamples, &required_samples) ==
-                                ESP_AE_ERR_OK && required_samples <= kWakeReadSamples,
-                            ESP_ERR_INVALID_SIZE, kTag, "Resampler output buffer");
-    }
+    esp_ae_rate_cvt_cfg_t rate = {};
+    rate.src_rate = kAudioRate;
+    rate.dest_rate = kWakeSampleRate;
+    rate.channel = 1;
+    rate.bits_per_sample = 16;
+    rate.complexity = 2;
+    rate.perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED;
+    ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_open(&rate, &resampler) == ESP_AE_ERR_OK,
+                        ESP_FAIL, kTag, "Open microphone resampler");
+    uint32_t required_samples = 0;
+    ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_get_max_out_sample_num(resampler, kReadSamples, &required_samples) ==
+                            ESP_AE_ERR_OK && required_samples <= kWakeReadSamples,
+                        ESP_ERR_INVALID_SIZE, kTag, "Resampler output buffer");
     return ESP_OK;
 }
 
@@ -169,11 +150,6 @@ esp_err_t ReadWakePcm(std::span<int16_t, kWakeReadSamples> pcm, size_t &samples)
     std::array<int16_t, kReadSamples> input;
     samples = 0;
     ESP_RETURN_ON_ERROR(esp_codec_dev_read(mic, input.data(), sizeof(input)), kTag, "Read microphone");
-    if (resampler == nullptr) {
-        samples = input.size();
-        std::copy_n(input.begin(), samples, pcm.begin());
-        return ESP_OK;
-    }
     uint32_t output_samples = pcm.size();
     ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_process(resampler, input.data(), input.size(), pcm.data(),
                                               &output_samples) == ESP_AE_ERR_OK,
@@ -189,8 +165,6 @@ esp_err_t PlayWakePrompt(std::span<const uint8_t> pcm, uint32_t sample_rate) {
     const int16_t *input = reinterpret_cast<const int16_t *>(pcm.data());
     size_t input_samples = pcm.size() / sizeof(int16_t);
 
-    // Prompt is short, so convert it in memory when the board rate differs
-    // (e.g. BOX-Lite plays the 24 kHz prompt at 16 kHz).
     std::vector<int16_t> converted;
     if (sample_rate != kAudioRate) {
         ESP_RETURN_ON_ERROR(ResamplePcm16Mono({input, input_samples}, sample_rate, kAudioRate, converted),
@@ -217,8 +191,6 @@ esp_err_t PlayWakePrompt(std::span<const uint8_t> pcm, uint32_t sample_rate) {
     for (size_t i = 0; i < kDmaBlocks; ++i) {
         ESP_RETURN_ON_ERROR(esp_codec_dev_read(mic, block.data(), sizeof(block)), kTag, "Drain microphone");
     }
-    if (resampler != nullptr) {
-        ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_reset(resampler) == ESP_AE_ERR_OK, ESP_FAIL, kTag, "Reset resampler");
-    }
+    ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_reset(resampler) == ESP_AE_ERR_OK, ESP_FAIL, kTag, "Reset resampler");
     return playback;
 }

@@ -1,64 +1,17 @@
-menu "Wake Word Board"
-
-choice WAKE_BOARD
-    prompt "Wake-word test board"
-    default WAKE_BOARD_BOX_3
-    help
-        Audio hardware used by the wake-word test firmware. Exactly one board
-        must be selected; every option maps to one implementation in boards/.
-        To add a board: implement InitBoardAudio/ReadWakePcm/PlayWakePrompt in
-        a new boards/<board>.cpp, then register it in main/Kconfig.projbuild
-        and main/CMakeLists.txt.
-
-    config WAKE_BOARD_BOX_3
-        bool "ESP32-S3-BOX-3 (ES7210 + ES8311)"
-        depends on IDF_TARGET_ESP32S3
-        help
-            On-board codec pair on one duplex I2S port, 24 kHz audio,
-            TDM capture with LRCK on GPIO45.
-
-    config WAKE_BOARD_BOX
-        bool "ESP32-S3-BOX, original (ES7210 + ES8311)"
-        depends on IDF_TARGET_ESP32S3
-        help
-            Same codec pair and wiring family as BOX-3, but LRCK is on
-            GPIO47. Audio runs at 24 kHz.
-
-    config WAKE_BOARD_BOX_LITE
-        bool "ESP32-S3-BOX-Lite (ES7210 + ES8311)"
-        depends on IDF_TARGET_ESP32S3
-        help
-            Same wiring as the original BOX (LRCK on GPIO47); audio runs at
-            16 kHz, so the 24 kHz prompt is resampled for playback.
-
-    config WAKE_BOARD_BREAD_COMPACT_WIFI
-        bool "Breadboard: INMP441 mic + MAX98357A amp (xiaozhi compact-wifi)"
-        depends on IDF_TARGET_ESP32S3
-        help
-            Simplex I2S without any codec control interface: INMP441
-            microphone at 16 kHz (WS 4 / SCK 5 / DIN 6, I2S1) and MAX98357A
-            amplifier at 24 kHz (BCLK 15 / LRCK 16 / DOUT 7, I2S0), following
-            xiaozhi-esp32 bread-compact-wifi wiring.
-
-endchoice
+menu "Wake Word Audio"
 
 config WAKE_MIC_GAIN
     int "Microphone input gain (dB)"
     range 0 37
     default 24
-    depends on WAKE_BOARD_BOX_3 || WAKE_BOARD_BOX || WAKE_BOARD_BOX_LITE
     help
         ES7210 input-channel gain passed to esp_codec_dev_set_in_channel_gain.
-        Only shown for boards with a controllable ADC.
 
 config WAKE_SPEAKER_VOLUME
     int "Speaker output volume (0-100)"
     range 0 100
     default 40
-    depends on WAKE_BOARD_BOX_3 || WAKE_BOARD_BOX || WAKE_BOARD_BOX_LITE
     help
-        Codec output volume passed to esp_codec_dev_set_out_vol. Only shown
-        for boards with a controllable DAC; the MAX98357A gain is fixed by
-        its hardware gain pin.
+        ES8311 output volume passed to esp_codec_dev_set_out_vol.
 
 endmenu
