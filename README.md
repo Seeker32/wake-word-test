@@ -1,6 +1,6 @@
 # ESP32 唤醒词测试固件
 
-这是放在项目根目录的原生 ESP-IDF C++ 工程。ESP32-S3-BOX-3 上电后用板载麦克风监听 **Hey Kamana**（hey kah-MAH-nah），命中后用板载扬声器播放一次 `voice_file/wake_up.wav`，然后恢复监听。模型和提示音随固件写入 Flash，运行时可离线测试。
+这是原生 ESP-IDF C++ 工程。ESP32-S3-BOX-3 上电后用板载麦克风监听 **Hey Kamana**（hey kah-MAH-nah），命中后用板载扬声器播放一次 `voice_file/wake_up.wav`，然后恢复监听。模型和提示音随固件写入 Flash，运行时可离线测试。
 
 ## 编译和烧录
 
