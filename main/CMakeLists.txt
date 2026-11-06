@@ -4,9 +4,9 @@ file(READ "${manifest_path}" model_manifest)
 string(JSON model_file GET "${model_manifest}" model)
 
 idf_component_register(
-    SRCS "main.cpp" "wake_detector.cpp" "../boards/esp32-s3-box-3.cpp"
+    SRCS "main.cpp" "resource_monitor.cpp" "wake_detector.cpp" "../boards/esp32-s3-box-3.cpp"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES esp_driver_i2c esp_driver_i2s
+    PRIV_REQUIRES esp_driver_i2c esp_driver_i2s esp_timer
     EMBED_FILES "${model_dir}/${model_file}" "${PROJECT_DIR}/voice_file/wake_up.wav"
 )
 

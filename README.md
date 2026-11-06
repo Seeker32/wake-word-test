@@ -18,9 +18,16 @@ idf.py flash monitor
 
 串口出现 `Listening for Hey Kamana` 后说一次唤醒词。确认日志出现 `Wake word detected: Hey Kamana`，板载扬声器完整播放一次提示音。等监听恢复后再说一次，确认两次均能触发。使用 `Ctrl+]` 退出串口监视。
 
+## 串口资源监控
+
+主循环约每 5 秒输出一条 `RES`。`cpu0_pct` 和 `cpu1_pct` 是各核在采样窗口内的忙碌率，`-1` 表示该核的数据不可用。堆统计针对可按字节访问的内部 RAM，包含当前余量、启动以来最低余量和当前最大连续空闲块。栈余量是主任务启动以来的最低值，内存单位都是字节。
+
+`process_avg_us` 和 `process_max_us` 是窗口内唤醒处理的平均和最大耗时，`process_count` 是处理次数。计时范围包含特征提取和模型推理，采集等待另计。每次提示音播放流程结束后输出 `WAKE playback_ms`，包含播放和驱动排空缓冲的时间。
+
 ## 源码目录
 
 - `main/main.cpp` 负责监听、播放和恢复检测。
+- `main/resource_monitor.cpp` 负责各板型共用的 CPU、堆和栈采样。
 - `main/wake_detector.cpp` 提取 16 kHz 单声道特征，使用 TensorFlow Lite Micro 运行量化流式模型，并对连续输出做滑动平均。
 - `boards/esp32-s3-box-3.cpp` 负责板载 ES7210、ES8311 和共享 I²S（LRCK GPIO45）。录音和播放使用 24 kHz 时钟，录音重采样到 16 kHz 供模型使用。播完提示音后排空录音缓冲并重置采集状态。
 - `boards/resample_util.h` 提供提示音的一次性重采样。
