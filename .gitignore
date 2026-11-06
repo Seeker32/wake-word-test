@@ -2,3 +2,5 @@
 /managed_components/
 /sdkconfig
 /sdkconfig.old
+.vscode
+models

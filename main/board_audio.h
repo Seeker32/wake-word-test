@@ -6,6 +6,7 @@
 #include "esp_err.h"
 
 constexpr uint32_t kWakeSampleRate = 16000;
+// Upper bound for one capture block handed to the detector. Blocks may be shorter.
 constexpr size_t kWakeReadSamples = 256;
 
 esp_err_t InitBoardAudio();

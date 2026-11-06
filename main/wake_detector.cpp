@@ -11,6 +11,9 @@ extern const uint8_t model_data[] asm(WAKE_MODEL_SYMBOL);
 
 namespace {
 constexpr char kTag[] = "wake_detector";
+constexpr int kFeatureWindowMs = 30;
+static_assert(WAKE_FEATURE_STEP > 0 && WAKE_FEATURE_STEP <= kFeatureWindowMs);
+static_assert(WAKE_PROBABILITY_CUTOFF >= 0 && WAKE_PROBABILITY_CUTOFF <= 1);
 }
 
 esp_err_t WakeDetector::Init() {
@@ -27,6 +30,7 @@ esp_err_t WakeDetector::Init() {
                         ESP_FAIL, kTag, "Register model operators");
 
     auto *allocator = tflite::MicroAllocator::Create(variable_arena_.data(), variable_arena_.size());
+    ESP_RETURN_ON_FALSE(allocator, ESP_ERR_NO_MEM, kTag, "Allocate model variable arena");
     auto *variables = tflite::MicroResourceVariables::Create(allocator, 20);
     ESP_RETURN_ON_FALSE(variables, ESP_ERR_NO_MEM, kTag, "Allocate model variable table");
     interpreter_.emplace(model, ops_, tensor_arena_.data(), tensor_arena_.size(), variables);
@@ -40,7 +44,7 @@ esp_err_t WakeDetector::Init() {
                         ESP_ERR_NOT_SUPPORTED, kTag, "Unexpected model input or output");
 
     FrontendConfig config = {};
-    config.window = {30, WAKE_FEATURE_STEP};
+    config.window = {kFeatureWindowMs, WAKE_FEATURE_STEP};
     config.filterbank.num_channels = kFeatures;
     config.filterbank.lower_band_limit = 125.0f;
     config.filterbank.upper_band_limit = 7500.0f;
@@ -76,7 +80,7 @@ esp_err_t WakeDetector::Process(std::span<const int16_t> pcm, bool &detected, fl
         for (int i = 0; i < kFeatures; ++i) {
             // The training frontend expresses its fixed-point features in units of 1/25.6.
             const int quantized = std::lround(features.values[i] / (25.6f * input_->params.scale));
-            row[i] = std::clamp(quantized + input_->params.zero_point, -128, 127);
+            row[i] = std::clamp<int32_t>(quantized + input_->params.zero_point, -128, 127);
         }
         if (++feature_row_ != static_cast<size_t>(input_->dims->data[1])) continue;
         feature_row_ = 0;

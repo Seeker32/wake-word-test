@@ -15,10 +15,20 @@
 namespace {
 constexpr char kTag[] = "box3_audio";
 constexpr uint32_t kAudioRate = 24000;
-constexpr uint32_t kReadSamples = kAudioRate / 100;
+// One capture block: 8 ms at 24 kHz. 10 ms would resample to 160 samples (16 kHz) and
+// esp_ae_rate_cvt_get_max_out_sample_num adds 128 samples of headroom on top of that,
+// which no longer fits kWakeReadSamples.
+constexpr uint32_t kReadSamples = kAudioRate * 8 / 1000;
+// Safety margin the rate converter asks for in esp_ae_rate_cvt_get_max_out_sample_num.
+constexpr size_t kResamplerPadSamples = 128;
+static_assert(kReadSamples * kWakeSampleRate / kAudioRate + kResamplerPadSamples <= kWakeReadSamples,
+              "Capture block resamples beyond kWakeReadSamples");
 constexpr size_t kDmaBlocks = 6;
 constexpr int kMicGain = 24;
-constexpr int kSpeakerVolume = 40;
+// esp_codec_dev maps this 0..100 value onto a -50..0 dB digital curve, so 0.5 dB per step.
+// The ES8311 DAC register behind it tops out at +32 dB, and the analog PA gain is fixed,
+// so 100 is the loudest distortion-free setting: 50 = -25 dB, 70 = -15 dB, 90 = -5 dB.
+constexpr int kSpeakerVolume = 100;
 
 esp_codec_dev_handle_t mic;
 esp_codec_dev_handle_t speaker;
@@ -124,9 +134,13 @@ esp_err_t InitBoardAudio() {
     ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_open(&rate, &resampler) == ESP_AE_ERR_OK,
                         ESP_FAIL, kTag, "Open microphone resampler");
     uint32_t required_samples = 0;
-    ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_get_max_out_sample_num(resampler, kReadSamples, &required_samples) ==
-                            ESP_AE_ERR_OK && required_samples <= kWakeReadSamples,
-                        ESP_ERR_INVALID_SIZE, kTag, "Resampler output buffer");
+    const esp_ae_err_t sizing =
+        esp_ae_rate_cvt_get_max_out_sample_num(resampler, kReadSamples, &required_samples);
+    if (sizing != ESP_AE_ERR_OK || required_samples > kWakeReadSamples) {
+        ESP_LOGE(kTag, "Resampler needs %u samples per block, buffer holds %u",
+                 static_cast<unsigned>(required_samples), static_cast<unsigned>(kWakeReadSamples));
+        return ESP_ERR_INVALID_SIZE;
+    }
     return ESP_OK;
 }
 
