@@ -1,4 +1,5 @@
 #include "board_audio.h"
+#include "display.h"
 #include "resource_monitor.h"
 #include "wav.h"
 #include "wake_detector.h"
@@ -22,6 +23,9 @@ extern "C" void app_main() {
     static WakeDetector detector;
     ESP_ERROR_CHECK(detector.Init());
     ESP_ERROR_CHECK(InitBoardAudio());
+    if (const esp_err_t display = InitDisplay(); display != ESP_OK) {
+        ESP_LOGE(tag, "Dashboard unavailable (%s), continuing without it", esp_err_to_name(display));
+    }
 
     constexpr int64_t report_interval_us = 5'000'000;
     ResourceMonitor monitor;
@@ -32,6 +36,7 @@ extern "C" void app_main() {
     size_t process_count = 0;
 
     std::array<int16_t, kWakeReadSamples> pcm;
+    float last_score = 0;
     ESP_LOGI(tag, "Listening for %s", WAKE_WORD);
     for (;;) {
         const int64_t now_us = esp_timer_get_time();
@@ -47,6 +52,8 @@ extern "C" void app_main() {
                      resources.heap_min_free_bytes, resources.heap_largest_free_block_bytes,
                      resources.stack_min_free_bytes, process_count,
                      process_count ? process_total_us / static_cast<int64_t>(process_count) : 0, process_max_us);
+            DisplayResources(resources.cpu_busy_pct[0], cpu1_pct, resources.heap_free_bytes,
+                             resources.heap_min_free_bytes, resources.heap_largest_free_block_bytes);
             last_report_us = now_us;
             process_total_us = 0;
             process_max_us = 0;
@@ -60,9 +67,12 @@ extern "C" void app_main() {
             continue;
         }
         bool detected;
-        float score;
+        // Process only writes score when it ran an inference, so carry the last value forward.
+        float score = last_score;
         const int64_t process_start_us = esp_timer_get_time();
         ESP_ERROR_CHECK(detector.Process(std::span(pcm).first(samples), detected, score));
+        last_score = score;
+        DisplayScore(score);
         const int64_t process_us = esp_timer_get_time() - process_start_us;
         process_total_us += process_us;
         process_max_us = std::max(process_max_us, process_us);

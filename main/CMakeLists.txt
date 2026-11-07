@@ -1,12 +1,20 @@
 set(model_dir "${PROJECT_DIR}/models")
 set(manifest_path "${model_dir}/hey_kamana.json")
+if(NOT EXISTS "${manifest_path}")
+    message(FATAL_ERROR "Missing ${manifest_path}. Copy hey_kamana.json and the .tflite file it names "
+                        "from the training output into ${model_dir}/ before building.")
+endif()
 file(READ "${manifest_path}" model_manifest)
 string(JSON model_file GET "${model_manifest}" model)
+if(NOT EXISTS "${model_dir}/${model_file}")
+    message(FATAL_ERROR "Missing ${model_dir}/${model_file}, named by the model field of ${manifest_path}.")
+endif()
 
 idf_component_register(
-    SRCS "main.cpp" "resource_monitor.cpp" "wake_detector.cpp" "../boards/esp32-s3-box-3.cpp"
+    SRCS "main.cpp" "display.cpp" "resource_monitor.cpp" "wake_detector.cpp" "../boards/esp32-s3-box-3.cpp"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES esp_driver_i2c esp_driver_i2s esp_timer
+    PRIV_REQUIRES esp_driver_gpio esp_driver_i2c esp_driver_i2s esp_driver_ledc esp_driver_spi esp_timer esp_lcd
+                  esp_lcd_ili9341 esp_lvgl_port lvgl
     EMBED_FILES "${model_dir}/${model_file}" "${PROJECT_DIR}/voice_file/wake_up.wav"
 )
 

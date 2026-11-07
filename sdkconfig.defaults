@@ -5,6 +5,15 @@ CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
 CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y
 
+# BOX-3 has 16 MB octal PSRAM; the dashboard falls back to it when internal RAM is short.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Keep LVGL's heap on the standard allocator instead of a static internal pool.
+CONFIG_LV_USE_CLIB_MALLOC=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+
 # BOX-3 audio tuning; adjust via "idf.py menuconfig".
 CONFIG_WAKE_MIC_GAIN=24
 CONFIG_WAKE_SPEAKER_VOLUME=40

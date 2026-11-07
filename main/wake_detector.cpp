@@ -116,6 +116,7 @@ esp_err_t WakeDetector::Process(std::span<const int16_t> pcm, bool &detected, fl
                 detected = true;
                 break;
             }
+            ++vad_blocked_count_;
             ESP_LOGD(kTag, "Wake candidate blocked by VAD (%.3f)", score);
         }
     }

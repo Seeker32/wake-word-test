@@ -20,6 +20,18 @@ idf.py flash monitor
 
 ESP-SR VAD 和唤醒模型持续接收同一段麦克风音频。唤醒分数达标且 VAD 检测到语音活动时才播放提示音。开启 DEBUG 日志可查看 `Wake candidate blocked by VAD`。
 
+## 屏幕仪表盘
+
+BOX-3 的 320×240 屏幕显示实时测试信息，纯显示、无触摸，串口日志保持不变：
+
+- 顶部横幅：`LISTENING`，命中后 2 秒显示绿色 `HIT!`，后面是开机运行时长 mm:ss；右侧是当前平滑分数。
+- 中部曲线：最近 30 秒的平滑分数。UI 每 100 ms 取该窗口内的最大分数作为一个点，峰值不会被降采样丢掉。红线是 manifest 里的 `probability_cutoff`；曲线越过红线却没报警，就是被 VAD 拦下了。
+- 指标行：VAD 圆点（绿=检测到语音，灰=静音）与麦克风 RMS 电平条。
+- 计数行：命中次数、被 VAD 拦下的累计次数、距上次命中的时间。
+- 资源行：与串口 `RES` 行同源的 CPU0/CPU1 忙碌百分比和内部堆空闲/最低/最大连续块（KB），每 5 秒刷新。
+
+调整阈值后重新烧写，对比曲线与红线即可判断是过高还是过低。屏幕初始化失败时只打印一行 `Dashboard unavailable (...)`，检测和串口输出照常运行。绘制缓冲优先用内部 RAM（DMA 直发），内部 RAM 不足时才退回 PSRAM 双缓冲。在旧的 `sdkconfig` 上构建需要重新生成配置（删除 `sdkconfig`，或进 `idf.py menuconfig` 保存一次）才会启用 PSRAM 和 LVGL 字体选项。
+
 ## 串口资源监控
 
 主循环约每 5 秒输出一条 `RES`。`cpu0_pct` 和 `cpu1_pct` 是各核在采样窗口内的忙碌率，`-1` 表示该核的数据不可用。堆统计针对可按字节访问的内部 RAM，包含当前余量、启动以来最低余量和当前最大连续空闲块。栈余量是主任务启动以来的最低值，内存单位都是字节。
@@ -29,9 +41,10 @@ ESP-SR VAD 和唤醒模型持续接收同一段麦克风音频。唤醒分数达
 ## 源码目录
 
 - `main/main.cpp` 负责监听、播放和恢复检测。
+- `main/display.cpp` 负责屏幕仪表盘：LVGL 控件、共享快照与 100 ms 刷新，不含任何引脚。
 - `main/resource_monitor.cpp` 负责各板型共用的 CPU、堆和栈采样。
 - `main/wake_detector.cpp` 提取 16 kHz 单声道特征，使用 TensorFlow Lite Micro 运行量化流式模型，并对连续输出做滑动平均。
-- `boards/esp32-s3-box-3.cpp` 负责板载 ES7210、ES8311 和共享 I²S（LRCK GPIO45）。录音和播放使用 24 kHz 时钟，录音重采样到 16 kHz 供模型使用。播完提示音后排空录音缓冲并重置采集状态。
+- `boards/esp32-s3-box-3.cpp` 负责板载 ES7210、ES8311 和共享 I²S（LRCK GPIO45），以及 SPI3 上的 ILI9341 屏幕与背光。录音和播放使用 24 kHz 时钟，录音重采样到 16 kHz 供模型使用。播完提示音后排空录音缓冲并重置采集状态。
 - `boards/resample_util.h` 提供提示音的一次性重采样。
 - `models/hey_kamana.json` 指定模型文件、唤醒词、初始阈值 `0.99`、滑动窗口 `5` 和内存大小。修改参数后重新编译即可。
 - `voice_file/wake_up.wav` 是 24 kHz、16 位单声道提示音。更换为其他采样率的提示音时，板级驱动会在播放前重采样。

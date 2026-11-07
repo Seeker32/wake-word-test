@@ -1,18 +1,27 @@
 #include "board_audio.h"
+#include "board_display.h"
 #include "resample_util.h"
 
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <iterator>
 #include <vector>
 
+#include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "driver/i2s_tdm.h"
+#include "driver/ledc.h"
+#include "driver/spi_master.h"
 #include "esp_ae_rate_cvt.h"
 #include "esp_check.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
+#include "esp_lcd_ili9341.h"
+#include "esp_lcd_io_spi.h"
+#include "esp_lcd_panel_dev.h"
+#include "esp_lcd_panel_ops.h"
 #include "sdkconfig.h"
 
 namespace {
@@ -26,6 +35,54 @@ constexpr gpio_num_t kDoutPin = GPIO_NUM_15;
 constexpr int kPaPin = GPIO_NUM_46;
 constexpr gpio_num_t kSdaPin = GPIO_NUM_8;
 constexpr gpio_num_t kSclPin = GPIO_NUM_18;
+
+// LCD on SPI3: ILI9341, 320x240 landscape, backlight on a plain GPIO.
+constexpr char kDisplayTag[] = "box3_display";
+constexpr gpio_num_t kLcdMosi = GPIO_NUM_6;
+constexpr gpio_num_t kLcdPclk = GPIO_NUM_7;
+constexpr gpio_num_t kLcdCs = GPIO_NUM_5;
+constexpr gpio_num_t kLcdDc = GPIO_NUM_4;
+constexpr gpio_num_t kLcdRst = GPIO_NUM_48;
+constexpr gpio_num_t kLcdBacklight = GPIO_NUM_47;
+constexpr int kLcdWidth = 320;
+constexpr int kLcdDrawLines = 40;
+constexpr int kLcdClockHz = 40 * 1000 * 1000;
+// LEDC PWM backlight: full brightness washes the black level out to blue-grey on this panel.
+constexpr int kBacklightPercent = 60;
+constexpr ledc_timer_t kBacklightTimer = LEDC_TIMER_1;
+constexpr ledc_channel_t kBacklightChannel = LEDC_CHANNEL_1;
+
+// Panel specific power/gamma sequence copied from the ESP-BOX-3 BSP.
+constexpr uint8_t kCmdPower1[] = {0xFF, 0x93, 0x42};
+constexpr uint8_t kCmdPower2[] = {0x0E, 0x0E};
+constexpr uint8_t kCmdVcom[] = {0xD0};
+constexpr uint8_t kCmdPower3[] = {0x02};
+constexpr uint8_t kCmdGain[] = {0x02};
+constexpr uint8_t kCmdGammaPos[] = {0x00, 0x03, 0x08, 0x06, 0x13, 0x09, 0x39, 0x39,
+                                    0x48, 0x02, 0x0A, 0x08, 0x17, 0x17, 0x0F};
+constexpr uint8_t kCmdGammaNeg[] = {0x00, 0x28, 0x29, 0x01, 0x0D, 0x03, 0x3F, 0x33,
+                                    0x52, 0x04, 0x0F, 0x0E, 0x37, 0x38, 0x0F};
+constexpr uint8_t kCmdFrameRate[] = {0x00, 0x1B};
+constexpr uint8_t kCmdMadctl[] = {0x08};
+constexpr uint8_t kCmdPixelFormat[] = {0x55};
+constexpr uint8_t kCmdGate[] = {0x06};
+
+constexpr ili9341_lcd_init_cmd_t kLcdInit[] = {
+    {0xC8, kCmdPower1, std::size(kCmdPower1), 0},
+    {0xC0, kCmdPower2, std::size(kCmdPower2), 0},
+    {0xC5, kCmdVcom, std::size(kCmdVcom), 0},
+    {0xC1, kCmdPower3, std::size(kCmdPower3), 0},
+    {0xB4, kCmdGain, std::size(kCmdGain), 0},
+    {0xE0, kCmdGammaPos, std::size(kCmdGammaPos), 0},
+    {0xE1, kCmdGammaNeg, std::size(kCmdGammaNeg), 0},
+    {0xB1, kCmdFrameRate, std::size(kCmdFrameRate), 0},
+    {0x36, kCmdMadctl, std::size(kCmdMadctl), 0},
+    {0x3A, kCmdPixelFormat, std::size(kCmdPixelFormat), 0},
+    {0xB7, kCmdGate, std::size(kCmdGate), 0},
+    {0x11, nullptr, 0, 0x80},
+    {0x29, nullptr, 0, 0x80},
+    {0x00, nullptr, 0xFF, 0},
+};
 
 constexpr uint32_t kReadSamples = kAudioRate * 8 / 1000;
 // The rate converter needs 128 samples of headroom beyond the resampled block.
@@ -193,4 +250,66 @@ esp_err_t PlayWakePrompt(std::span<const uint8_t> pcm, uint32_t sample_rate) {
     }
     ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_reset(resampler) == ESP_AE_ERR_OK, ESP_FAIL, kTag, "Reset resampler");
     return playback;
+}
+
+esp_err_t InitBoardDisplay(esp_lcd_panel_io_handle_t &io, esp_lcd_panel_handle_t &panel) {
+    ledc_timer_config_t backlight_timer = {};
+    backlight_timer.speed_mode = LEDC_LOW_SPEED_MODE;
+    backlight_timer.duty_resolution = LEDC_TIMER_10_BIT;
+    backlight_timer.timer_num = kBacklightTimer;
+    backlight_timer.freq_hz = 5000;
+    backlight_timer.clk_cfg = LEDC_AUTO_CLK;
+    ESP_RETURN_ON_ERROR(ledc_timer_config(&backlight_timer), kDisplayTag, "Backlight timer");
+
+    ledc_channel_config_t backlight = {};
+    backlight.gpio_num = kLcdBacklight;
+    backlight.speed_mode = LEDC_LOW_SPEED_MODE;
+    backlight.channel = kBacklightChannel;
+    backlight.intr_type = LEDC_INTR_DISABLE;
+    backlight.timer_sel = kBacklightTimer;
+    backlight.duty = 0;
+    backlight.hpoint = 0;
+    ESP_RETURN_ON_ERROR(ledc_channel_config(&backlight), kDisplayTag, "Backlight channel");
+
+    spi_bus_config_t bus = {};
+    bus.mosi_io_num = kLcdMosi;
+    bus.miso_io_num = GPIO_NUM_NC;
+    bus.sclk_io_num = kLcdPclk;
+    bus.quadwp_io_num = GPIO_NUM_NC;
+    bus.quadhd_io_num = GPIO_NUM_NC;
+    bus.max_transfer_sz = kLcdWidth * kLcdDrawLines * sizeof(uint16_t);
+    ESP_RETURN_ON_ERROR(spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO), kDisplayTag, "LCD SPI bus");
+
+    esp_lcd_panel_io_spi_config_t io_config = {};
+    io_config.cs_gpio_num = kLcdCs;
+    io_config.dc_gpio_num = kLcdDc;
+    io_config.spi_mode = 0;
+    io_config.pclk_hz = kLcdClockHz;
+    io_config.trans_queue_depth = 10;
+    io_config.lcd_cmd_bits = 8;
+    io_config.lcd_param_bits = 8;
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(SPI3_HOST), &io_config, &io),
+                        kDisplayTag, "LCD panel IO");
+
+    constexpr ili9341_vendor_config_t vendor = {
+        .init_cmds = kLcdInit,
+        .init_cmds_size = static_cast<uint16_t>(std::size(kLcdInit)),
+    };
+    esp_lcd_panel_dev_config_t panel_config = {};
+    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
+    panel_config.bits_per_pixel = 16;
+    panel_config.reset_gpio_num = kLcdRst;
+    panel_config.vendor_config = const_cast<ili9341_vendor_config_t *>(&vendor);
+    panel_config.flags.reset_active_high = 1;
+    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_ili9341(io, &panel_config, &panel), kDisplayTag, "ILI9341 panel");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(panel), kDisplayTag, "Panel reset");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_init(panel), kDisplayTag, "Panel init");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(panel, true, true), kDisplayTag, "Panel mirror");
+    return esp_lcd_panel_disp_on_off(panel, true);
+}
+
+void BoardDisplayBacklight(bool on) {
+    const uint32_t duty = on ? static_cast<uint32_t>((1023 * kBacklightPercent) / 100) : 0;
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, kBacklightChannel, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, kBacklightChannel);
 }

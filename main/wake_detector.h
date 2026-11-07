@@ -15,6 +15,11 @@ public:
     esp_err_t Reset();
     esp_err_t Process(std::span<const int16_t> pcm, bool &detected, float &score);
 
+    // Speech gate state from the last VAD frame.
+    bool speech_active() const { return speech_active_; }
+    // Scores that reached the cutoff while the VAD gate was closed, accumulated since boot.
+    size_t vad_blocked_count() const { return vad_blocked_count_; }
+
 private:
     static constexpr int kFeatures = 40;
     static constexpr size_t kWindow = WAKE_SLIDING_WINDOW;
@@ -38,4 +43,5 @@ private:
     std::array<int16_t, kWakeSampleRate * kVadFrameMs / 1000> vad_frame_{};
     size_t vad_samples_ = 0;
     bool speech_active_ = false;
+    size_t vad_blocked_count_ = 0;
 };
