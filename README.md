@@ -6,7 +6,9 @@
 
 使用 ESP-IDF 6.0.1 或更新的 6.0.x 版本。激活 ESP-IDF 环境后，在本目录执行以下命令。首次构建需要下载 ESP-IDF 组件和训练所用的 MicroFrontend 源码。
 
-构建前，将 `hey_kamana.json` 和清单的 `model` 字段指定的 `.tflite` 文件放到本项目的 `models/` 目录。
+构建前，将模型清单（`*.json`，如 `hey_kamana_v2.json`）和清单的 `model` 字段指定的 `.tflite` 文件放到本项目的 `models/` 目录。
+
+要嵌入哪个清单由 sdkconfig 决定：`menuconfig` / SDK Configuration Editor → `Wake Word Audio` → `Wake word model manifest`，填 `models/` 下的清单文件名（如 `hi_circle_v1.json`），留空则自动选择（目录里只有一个清单时直接用；多个时嵌入排序靠前的第一个并打印警告）。测试不同唤醒词时在此切换，下次 build 自动重新链接对应模型。
 
 ```sh
 idf.py set-target esp32s3
@@ -44,7 +46,7 @@ BOX-3 的 320×240 屏幕显示实时测试信息，纯显示、无触摸，串�
 - `main/display.cpp` 负责屏幕仪表盘：LVGL 控件、共享快照与 100 ms 刷新，不含任何引脚。
 - `main/resource_monitor.cpp` 负责各板型共用的 CPU、堆和栈采样。
 - `main/wake_detector.cpp` 提取 16 kHz 单声道特征，使用 TensorFlow Lite Micro 运行量化流式模型，并对连续输出做滑动平均。
-- `boards/esp32-s3-box-3.cpp` 负责板载 ES7210、ES8311 和共享 I²S（LRCK GPIO45），以及 SPI3 上的 ILI9341 屏幕与背光。录音和播放使用 24 kHz 时钟，录音重采样到 16 kHz 供模型使用。播完提示音后排空录音缓冲并重置采集状态。
+- `boards/esp32-s3-box-3.cpp` 负责板载 ES7210、ES8311 和共享 I²S（LRCK GPIO45），以及 SPI3 上的 ILI9341 屏幕与背光。录音走 ES7210 的双麦克风（MIC1/MIC2，立体声 I²S），两路等权平均成单声道；录音和播放使用 24 kHz 时钟，录音重采样到 16 kHz 供模型使用。播完提示音后排空录音缓冲并重置采集状态。
 - `boards/resample_util.h` 提供提示音的一次性重采样。
-- `models/hey_kamana.json` 指定模型文件、唤醒词、初始阈值 `0.99`、滑动窗口 `5` 和内存大小。修改参数后重新编译即可。
+- `models/hey_kamana_v2.json` 指定模型文件、唤醒词、初始阈值 `0.99`、滑动窗口 `5` 和内存大小。修改参数后重新编译即可。
 - `voice_file/wake_up.wav` 是 24 kHz、16 位单声道提示音。更换为其他采样率的提示音时，板级驱动会在播放前重采样。

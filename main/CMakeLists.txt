@@ -1,7 +1,43 @@
 set(model_dir "${PROJECT_DIR}/models")
-set(manifest_path "${model_dir}/hey_kamana.json")
+# 要嵌入的清单由 sdkconfig 的 CONFIG_WAKE_MODEL_MANIFEST 选择
+# （menuconfig / SDK Configuration Editor → Wake Word Audio → Wake word model manifest），
+# 留空 = 自动探测：models/ 下只有一个 *.json 时用它，多个时取排序第一个。
+# 选择错误只警告并回退自动模式，不在配置期 FATAL_ERROR（否则 menuconfig 会被堵死）。
+set(manifest_path "")
+set(manifest_notes "")
+if(CONFIG_WAKE_MODEL_MANIFEST)
+    set(manifest_path "${model_dir}/${CONFIG_WAKE_MODEL_MANIFEST}")
+    if(NOT EXISTS "${manifest_path}")
+        string(APPEND manifest_notes
+            "CONFIG_WAKE_MODEL_MANIFEST='${CONFIG_WAKE_MODEL_MANIFEST}' not found in ${model_dir}.\n")
+        set(manifest_path "")
+    endif()
+endif()
+if(NOT manifest_path)
+    file(GLOB manifests "${model_dir}/*.json")
+    list(SORT manifests)
+    list(LENGTH manifests manifest_count)
+    if(manifest_count EQUAL 1)
+        list(GET manifests 0 manifest_path)
+    elseif(manifest_count EQUAL 0)
+        message(FATAL_ERROR "No model manifest (*.json) found in ${model_dir}. Copy the manifest and the .tflite "
+                            "file it names from the training output into ${model_dir}/ before building.")
+    else()
+        list(GET manifests 0 manifest_path)
+        get_filename_component(manifest_name "${manifest_path}" NAME)
+        list(JOIN manifests "\n  " manifests_pretty)
+        string(APPEND manifest_notes
+            "Multiple manifests in ${model_dir}:\n  ${manifests_pretty}\n"
+            "Defaulting to ${manifest_name}.\n")
+    endif()
+endif()
+if(manifest_notes)
+    string(APPEND manifest_notes
+        "Pick a model in menuconfig: Wake Word Audio → Wake word model manifest (under models/).")
+    message(WARNING "${manifest_notes}")
+endif()
 if(NOT EXISTS "${manifest_path}")
-    message(FATAL_ERROR "Missing ${manifest_path}. Copy hey_kamana.json and the .tflite file it names "
+    message(FATAL_ERROR "Missing ${manifest_path}. Copy the manifest and the .tflite file it names "
                         "from the training output into ${model_dir}/ before building.")
 endif()
 file(READ "${manifest_path}" model_manifest)

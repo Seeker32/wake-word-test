@@ -1,5 +1,16 @@
 menu "Wake Word Audio"
 
+config WAKE_MODEL_MANIFEST
+    string "Wake word model manifest (under models/)"
+    default ""
+    help
+        Model manifest file to embed, e.g. "hi_circle_v1.json". Each manifest
+        is one wake word/version, and names its .tflite in its "model" field.
+        Leave empty for automatic selection: the only *.json in models/, or
+        (if there are several) the alphabetically first one, with a build warning.
+        Switch models here when testing different wake words; the next build
+        relinks the firmware with the chosen model.
+
 config WAKE_MIC_GAIN
     int "Microphone input gain (dB)"
     range 0 37
