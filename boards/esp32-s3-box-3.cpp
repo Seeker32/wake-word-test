@@ -11,7 +11,6 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
-#include "driver/i2s_tdm.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
 #include "esp_ae_rate_cvt.h"
@@ -84,6 +83,9 @@ constexpr ili9341_lcd_init_cmd_t kLcdInit[] = {
     {0x00, nullptr, 0xFF, 0},
 };
 
+// BOX-3 wires its two microphones to ES7210 MIC1/MIC2, so a capture block is one
+// stereo I2S frame per sample instant. Frames are mixed down to mono before resampling.
+constexpr int kMicChannels = 2;
 constexpr uint32_t kReadSamples = kAudioRate * 8 / 1000;
 // The rate converter needs 128 samples of headroom beyond the resampled block.
 constexpr size_t kResamplerPadSamples = 128;
@@ -110,15 +112,14 @@ esp_err_t InitI2s(i2s_chan_handle_t &tx, i2s_chan_handle_t &rx) {
     output.gpio_cfg = { .mclk = kMclkPin, .bclk = kBclkPin, .ws = kWsPin,
                         .dout = kDoutPin, .din = GPIO_NUM_NC, .invert_flags = {} };
 
-    i2s_tdm_config_t input = {};
-    input.clk_cfg = I2S_TDM_CLK_DEFAULT_CONFIG(kAudioRate);
-    input.slot_cfg = I2S_TDM_PHILIPS_SLOT_DEFAULT_CONFIG(
-        I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO,
-        static_cast<i2s_tdm_slot_mask_t>(I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3));
+    // Two microphones leave the ES7210 in plain stereo I2S (L = MIC1, R = MIC2).
+    i2s_std_config_t input = {};
+    input.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(kAudioRate);
+    input.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
     input.gpio_cfg = { .mclk = kMclkPin, .bclk = kBclkPin, .ws = kWsPin,
                        .dout = GPIO_NUM_NC, .din = kDinPin, .invert_flags = {} };
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(tx, &output), kTag, "I2S speaker");
-    ESP_RETURN_ON_ERROR(i2s_channel_init_tdm_mode(rx, &input), kTag, "I2S microphone");
+    ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(rx, &input), kTag, "I2S microphone");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(tx), kTag, "Enable speaker clock");
     return i2s_channel_enable(rx);
 }
@@ -164,7 +165,9 @@ esp_err_t InitBoardAudio() {
     dac.hw_gain.codec_dac_voltage = 3.3f;
     es7210_codec_cfg_t adc = {};
     adc.ctrl_if = adc_control;
-    adc.mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2 | ES7210_SEL_MIC3 | ES7210_SEL_MIC4;
+    // BOX-3 has exactly two microphones on MIC1/MIC2. With fewer than three selected
+    // channels the ES7210 stays in stereo I2S mode instead of switching to 4-slot TDM.
+    adc.mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2;
 
     esp_codec_dev_cfg_t output = { ESP_CODEC_DEV_TYPE_OUT, es8311_codec_new(&dac), data };
     esp_codec_dev_cfg_t input = { ESP_CODEC_DEV_TYPE_IN, es7210_codec_new(&adc), data };
@@ -176,8 +179,8 @@ esp_err_t InitBoardAudio() {
     esp_codec_dev_sample_info_t mic_format = {};
     mic_format.sample_rate = kAudioRate;
     mic_format.bits_per_sample = 16;
-    mic_format.channel = 4;
-    mic_format.channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0);
+    mic_format.channel = kMicChannels;
+    mic_format.channel_mask = ESP_CODEC_DEV_MAKE_CHANNEL_MASK(0) | ESP_CODEC_DEV_MAKE_CHANNEL_MASK(1);
     esp_codec_dev_sample_info_t speaker_format = {};
     speaker_format.sample_rate = kAudioRate;
     speaker_format.bits_per_sample = 16;
@@ -204,11 +207,19 @@ esp_err_t InitBoardAudio() {
 }
 
 esp_err_t ReadWakePcm(std::span<int16_t, kWakeReadSamples> pcm, size_t &samples) {
-    std::array<int16_t, kReadSamples> input;
+    std::array<int16_t, kReadSamples * kMicChannels> input;
+    std::array<int16_t, kReadSamples> mono;
     samples = 0;
-    ESP_RETURN_ON_ERROR(esp_codec_dev_read(mic, input.data(), sizeof(input)), kTag, "Read microphone");
+    ESP_RETURN_ON_ERROR(esp_codec_dev_read(mic, input.data(), sizeof(input)), kTag, "Read microphones");
+    // Equal-weight mix of both microphones: averaging cannot clip, and the detector
+    // only consumes mono. Per-channel gain is already matched by WAKE_MIC_GAIN.
+    for (size_t i = 0; i < kReadSamples; ++i) {
+        const int32_t left = input[i * kMicChannels];
+        const int32_t right = input[i * kMicChannels + 1];
+        mono[i] = static_cast<int16_t>((left + right) / 2);
+    }
     uint32_t output_samples = pcm.size();
-    ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_process(resampler, input.data(), input.size(), pcm.data(),
+    ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_process(resampler, mono.data(), mono.size(), pcm.data(),
                                               &output_samples) == ESP_AE_ERR_OK,
                         ESP_FAIL, kTag, "Resample microphone");
     samples = output_samples;
@@ -231,6 +242,7 @@ esp_err_t PlayWakePrompt(std::span<const uint8_t> pcm, uint32_t sample_rate) {
     }
 
     std::array<int16_t, kReadSamples> block;
+    std::array<int16_t, kReadSamples * kMicChannels> discard;
     esp_err_t playback = ESP_OK;
     size_t offset = 0;
     while (offset < input_samples && playback == ESP_OK) {
@@ -246,7 +258,7 @@ esp_err_t PlayWakePrompt(std::span<const uint8_t> pcm, uint32_t sample_rate) {
         playback = esp_codec_dev_write(speaker, block.data(), sizeof(block));
     }
     for (size_t i = 0; i < kDmaBlocks; ++i) {
-        ESP_RETURN_ON_ERROR(esp_codec_dev_read(mic, block.data(), sizeof(block)), kTag, "Drain microphone");
+        ESP_RETURN_ON_ERROR(esp_codec_dev_read(mic, discard.data(), sizeof(discard)), kTag, "Drain microphones");
     }
     ESP_RETURN_ON_FALSE(esp_ae_rate_cvt_reset(resampler) == ESP_AE_ERR_OK, ESP_FAIL, kTag, "Reset resampler");
     return playback;
