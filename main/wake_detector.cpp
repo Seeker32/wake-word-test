@@ -12,6 +12,10 @@ extern const uint8_t model_data[] asm(WAKE_MODEL_SYMBOL);
 namespace {
 constexpr char kTag[] = "wake_detector";
 constexpr int kFeatureWindowMs = 30;
+// The score only peaks after the whole wake word, and the sliding average adds kWindow * feature
+// step of lag on top (5 * 10 ms), while the model's receptive field is ~0.7 s. Silence must
+// therefore outlast that budget before the gate closes, otherwise a valid hit is dropped.
+constexpr int kVadHangoverMs = 1000;
 static_assert(WAKE_FEATURE_STEP > 0 && WAKE_FEATURE_STEP <= kFeatureWindowMs);
 static_assert(WAKE_PROBABILITY_CUTOFF >= 0 && WAKE_PROBABILITY_CUTOFF <= 1);
 }
@@ -53,8 +57,9 @@ esp_err_t WakeDetector::Init() {
     config.log_scale = {1, 6};
     ESP_RETURN_ON_FALSE(FrontendPopulateState(&config, &frontend_, kWakeSampleRate), ESP_ERR_NO_MEM,
                         kTag, "Initialize fixed-point audio frontend");
-    // Keep the gate open through the quiet tail of a spoken wake word.
-    vad_ = vad_create_with_param(VAD_MODE_1, kWakeSampleRate, kVadFrameMs, 30, 300);
+    // Normal mode (VAD_MODE_0) reports speech more readily than aggressive modes; the hangover keeps
+    // the gate open through the quiet tail of a spoken wake word.
+    vad_ = vad_create_with_param(VAD_MODE_0, kWakeSampleRate, kVadFrameMs, 30, kVadHangoverMs);
     ESP_RETURN_ON_FALSE(vad_, ESP_ERR_NO_MEM, kTag, "Initialize ESP-SR VAD");
     ESP_LOGI(kTag, "Model ready, %u tensor arena bytes used, ESP-SR VAD enabled",
              static_cast<unsigned>(interpreter_->arena_used_bytes()));
